@@ -1,0 +1,85 @@
+import ccxt
+import pandas as pd
+import time
+from datetime import datetime, timedelta
+
+# --- Конфигурация ---
+exchange = ccxt.okx({
+    'apiKey': '====',
+    'secret': '===',
+    'password': '===',  # Если требуется
+    'enableRateLimit': True,
+    'options': {
+        'defaultType': 'swap',
+    },
+})
+
+symbol = 'BTC/USDT:USDT'  # Изменен на BTC/USDT
+peak_delta_threshold = 5000
+analysis_interval_seconds = 5  # Интервал проверки данных
+delta_lookback_seconds = 60  # Период для расчета дельты (например, за последнюю минуту)
+
+class PeakDeltaAnalysisBot:
+    def __init__(self):
+        self.recent_trades = pd.DataFrame(columns=['timestamp', 'side', 'amount', 'price'])
+        self.last_analysis_time = time.time()
+        self.max_positive_delta = 0
+        self.max_negative_delta = 0
+        self.max_positive_delta_time = None
+        self.max_negative_delta_time = None
+
+    def fetch_recent_trades(self):
+        now = datetime.now()
+        since = int((now - timedelta(seconds=delta_lookback_seconds * 2)).timestamp() * 1000)
+        try:
+            trades = exchange.fetch_trades(symbol, since=since)
+            if trades:
+                df = pd.DataFrame(trades, columns=['timestamp', 'side', 'amount', 'price'])
+                self.recent_trades = pd.concat([self.recent_trades, df]).drop_duplicates(subset=['timestamp']).sort_values('timestamp').reset_index(drop=True)
+                self.recent_trades = self.recent_trades.tail(1000) # Храним последние 1000 сделок
+            else:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Нет новых сделок.")
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Ошибка при получении сделок: {e}")
+
+    def calculate_delta(self):
+        now = datetime.now()
+        start_time = now - timedelta(seconds=delta_lookback_seconds)
+        relevant_trades = self.recent_trades[(self.recent_trades['timestamp'] >= start_time.timestamp() * 1000)]
+
+        if not relevant_trades.empty:
+            buys_volume = relevant_trades[relevant_trades['side'] == 'buy']['amount'].sum()
+            sells_volume = relevant_trades[relevant_trades['side'] == 'sell']['amount'].sum()
+            delta = buys_volume - sells_volume
+            return delta
+        return 0
+
+    def analyze_peak_delta(self):
+        delta = self.calculate_delta()
+        current_time = datetime.now().strftime('%H:%M:%S')
+
+        if delta >= peak_delta_threshold and delta > self.max_positive_delta:
+            self.max_positive_delta = delta
+            self.max_positive_delta_time = current_time
+            print(f"[{current_time}] 🔥 Новый максимальный положительный пик дельты за {delta_lookback_seconds} сек: {delta:.2f} BTC")
+        elif delta <= -peak_delta_threshold and delta < self.max_negative_delta:
+            self.max_negative_delta = delta
+            self.max_negative_delta_time = current_time
+            print(f"[{current_time}] 🔥 Новый максимальный отрицательный пик дельты за {delta_lookback_seconds} сек: {delta:.2f} BTC")
+        elif abs(delta) >= peak_delta_threshold:
+            print(f"[{current_time}] Текущая дельта за {delta_lookback_seconds} сек: {delta:.2f} BTC")
+
+    def run(self):
+        print(f"\n=== Peak Delta Analysis Bot (BTC/USDT) ===")
+        print(f"Отслеживание пиковых значений дельты (>= +/- {peak_delta_threshold} BTC) за последние {delta_lookback_seconds} секунд.\n")
+
+        while True:
+            self.fetch_recent_trades()
+            if time.time() - self.last_analysis_time >= analysis_interval_seconds:
+                self.analyze_peak_delta()
+                self.last_analysis_time = time.time()
+            time.sleep(0.5) # Уменьшим интервал для более частого анализа
+
+if __name__ == "__main__":
+    peak_delta_bot = PeakDeltaAnalysisBot()
+    peak_delta_bot.run()
